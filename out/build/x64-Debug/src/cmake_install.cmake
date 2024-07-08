@@ -1,8 +1,8 @@
-# Install script for directory: E:/QQ/1710620472/FileRecv/db2/db/src
+# Install script for directory: D:/AAshujuku/Database/src
 
 # Set the install prefix
 if(NOT DEFINED CMAKE_INSTALL_PREFIX)
-  set(CMAKE_INSTALL_PREFIX "E:/QQ/1710620472/FileRecv/db2/db/out/install/x64-Debug")
+  set(CMAKE_INSTALL_PREFIX "D:/AAshujuku/Database/out/install/x64-Debug")
 endif()
 string(REGEX REPLACE "/$" "" CMAKE_INSTALL_PREFIX "${CMAKE_INSTALL_PREFIX}")
 

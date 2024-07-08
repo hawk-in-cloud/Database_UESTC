@@ -15,6 +15,7 @@
 #include "./schema.h"
 #include "./block.h"
 #include "./buffer.h"
+#include "./bpt.h"
 
 namespace db {
 
@@ -68,7 +69,9 @@ class Table
     unsigned int locate(void *keybuf, unsigned int len);
     // 定位一个block后，插入一条记录
     int insert(unsigned int blkid, std::vector<struct iovec> &iov);
+    // 定位一个block后，删除某个记录
     int remove(unsigned int blkid, void *keybuf, unsigned int len);
+    //定位一个block后，更新某个记录
     int update(unsigned int blkid, std::vector<struct iovec> &iov);
     // btree搜索
     unsigned int search(void *keybuf, unsigned int len);
@@ -79,15 +82,16 @@ class Table
     unsigned int dataCount();
     // 返回表上空闲块个数
     unsigned int idleCount();
-
+    //
+    unsigned int indexCount();
     // block迭代器
     BlockIterator beginblock();
     BlockIterator endblock();
 
     // 新分配一个block，返回blockid，但并没有将该block插入数据链上
-    unsigned int allocate();
+    unsigned int allocate(int BlockType);
     // 回收一个block
-    void deallocate(unsigned int blockid);
+    void deallocate(unsigned int blockid, int BlockType);
 };
 
 inline bool

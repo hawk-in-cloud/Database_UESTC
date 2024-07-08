@@ -12,7 +12,6 @@ using namespace db;
 
 TEST_CASE("db/integer.h")
 {
-    //三个SECTION
     SECTION("integer")
     {
         Integer it;

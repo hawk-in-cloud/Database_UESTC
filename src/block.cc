@@ -145,6 +145,12 @@ void SuperBlock::clear(unsigned short spaceid)
     setFreeSpace(sizeof(SuperHeader));
     // 设置checksum
     setChecksum();
+    //设定阶数
+    setOrder(0);
+    //设定树高
+    setHeight(0);
+    //设定第一个叶子节点位置
+    setIndexLeaf(0);
 }
 
 void MetaBlock::clear(
@@ -289,7 +295,7 @@ void MetaBlock::shrink()
     std::sort(slots, slots + getSlots(), osort);
 
     // 枚举所有record，然后向前移动
-    unsigned short offset = sizeof(MetaHeader);
+    unsigned short offset = getFirstRecord();
     unsigned short space = 0;
     for (unsigned short i = 0; i < getSlots(); ++i) {
         unsigned short len = be16toh((slots + i)->length);
@@ -303,10 +309,38 @@ void MetaBlock::shrink()
     // 设定freespace
     setFreeSpace(offset);
     // 计算freesize
-    setFreeSize(BLOCK_SIZE - sizeof(MetaHeader) - getTrailerSize() - space);
+    setFreeSize(BLOCK_SIZE - getFirstRecord() - getTrailerSize() - space);
 }
 
+std::pair<bool, unsigned short> DataBlock::searchRecord(void *buf, size_t len)
+{
+    DataHeader *header = reinterpret_cast<DataHeader *>(buffer_);
 
+    // 获取key位置
+    RelationInfo *info = table_->info_;
+    unsigned int key = info->key;
+    //使用search找到lowbound
+    unsigned short index =
+        info->fields[key].type->search(buffer_, key, buf, len);
+
+    //判断lowbound的key和搜索的key是否一致。
+    Record record;
+    if (index >= getSlots()) {
+        return std::pair<bool, unsigned short>(false, index);
+    }
+
+    refslots(index, record);
+
+    unsigned char *pkey;
+    unsigned int plen;
+    record.refByIndex(&pkey, &plen, key);
+    // key相等,存在该记录
+    if (memcmp(pkey, buf, len) == 0)
+        return std::pair<bool, unsigned short>(true, index);
+    // key不相等，不存在该记录
+    else
+        return std::pair<bool, unsigned short>(false, index);
+}
 
 std::pair<unsigned short, bool>
 DataBlock::splitPosition(size_t space, unsigned short index)
@@ -351,7 +385,16 @@ unsigned short DataBlock::requireLength(std::vector<struct iovec> &iov)
             sizeof(unsigned int)); // trailer新增部分
     return (unsigned short) (length + trailer);
 }
-
+unsigned short IndexBlock::requireLength(std::vector<struct iovec> &iov)
+{
+    size_t length = ALIGN_TO_SIZE(Record::size(iov)); // 对齐8B后的长度
+    size_t trailer =
+        ALIGN_TO_SIZE((getSlots() + 1) * sizeof(Slot) + sizeof(unsigned int)) -
+        ALIGN_TO_SIZE(
+            getSlots() * sizeof(Slot) +
+            sizeof(unsigned int)); // trailer新增部分
+    return (unsigned short) (length + trailer);
+}
 std::pair<bool, unsigned short>
 DataBlock::insertRecord(std::vector<struct iovec> &iov)
 {
@@ -399,25 +442,23 @@ DataBlock::insertRecord(std::vector<struct iovec> &iov)
     return std::pair<bool, unsigned short>(true, index);
 }
 
-unsigned short DataBlock::searchRecord(void *buf, size_t len)
+std::pair<bool, unsigned short>
+DataBlock::updateRecord(std::vector<struct iovec> &iov)
 {
-    DataHeader *header = reinterpret_cast<DataHeader *>(buffer_);
-
-    // 获取key位置
     RelationInfo *info = table_->info_;
     unsigned int key = info->key;
-
-    // 调用数据类型的搜索
-    return info->fields[key].type->search(buffer_, key, buf, len);
+    DataType *type = info->fields[key].type;
+    std::pair<bool, unsigned short> ret =
+        searchRecord(iov[key].iov_base, iov[key].iov_len);
+    if (ret.first == false) return std::pair<bool, unsigned short>(false, -1);
+    unsigned short index = ret.second;
+    //将原来的标记为Tomestone
+    deallocate(index);
+    //将新的插入
+    std::pair<bool, unsigned short> ret2 = insertRecord(iov);
+    return ret2;
 }
 
-// 修改记录
-// 修改一条存在的记录
-// 先标定原记录为tomestone，然后插入新记录
-bool DataBlock::updateRecord(std::vector<struct iovec> &iov){
-    
-    return true;
-}
 bool DataBlock::copyRecord(Record &record)
 {
     // 判断剩余空间是否足够
@@ -440,6 +481,132 @@ bool DataBlock::copyRecord(Record &record)
     reorder(type, key); // 最后才重排？
 #endif
     return true;
+}
+bool IndexBlock::copyRecord(size_t key_len,Record &record)
+{
+    unsigned int pkey = table_->info_->key;
+     DataType *type = table_->info_->fields[pkey].type;
+                std::vector<struct iovec> iov_copy(2);
+                void *point_key = new char[key_len];
+                unsigned int point_value;
+                unsigned int value_len = 4;
+                record.getByIndex(
+                    (char *) point_key, (unsigned int *) &key_len, 0);
+                record.getByIndex((char *) &point_value, &value_len, 1);
+                iov_copy[0].iov_base = point_key;
+                iov_copy[0].iov_len = key_len;
+                iov_copy[1].iov_base = &point_value;
+                iov_copy[1].iov_len = 4;
+                insertRecord(iov_copy);
+                return true;
+}
+void IndexBlock::clear(
+    unsigned short spaceid,
+    unsigned int self,
+    unsigned short type,
+    bool is_leaf)
+{
+    // 清buffer
+    ::memset(buffer_, 0, BLOCK_SIZE);
+    IndexHeader *header = reinterpret_cast<IndexHeader *>(buffer_);
+
+    // 设定magic
+    header->magic = MAGIC_NUMBER;
+    // 设定spaceid
+    setSpaceid(spaceid);
+    // 设定类型
+    setType(type);
+    // 设定空闲块
+    setNext(0);
+    // 设置本块id
+    setSelf(self);
+    // 设定时戳
+    setTimeStamp();
+    // 设定slots
+    setSlots(0);
+    // 设定freesize
+    setFreeSize(BLOCK_SIZE - sizeof(IndexHeader) - sizeof(Trailer));
+    // 设定freespace
+    setFreeSpace(sizeof(IndexHeader));
+    //设定mark
+    setMark(is_leaf);
+    // 设定校验和
+    setChecksum();
+}
+std::pair<bool, unsigned short> IndexBlock::searchRecord(void *buf, size_t len)
+{
+    IndexHeader *header = reinterpret_cast<IndexHeader *>(buffer_);
+
+    // 获取key位置
+    RelationInfo *info = table_->info_;
+    unsigned int key = info->key;
+    //使用search找到lowbound
+    unsigned short index = info->fields[key].type->search(buffer_, 0, buf, len);
+
+    //判断lowbound的key和搜索的key是否一致。
+    Record record;
+    if (index >= getSlots()) {
+        return std::pair<bool, unsigned short>(false, index);
+    }
+
+    refslots(index, record);
+    unsigned char *pkey;
+    unsigned int plen;
+    record.refByIndex(&pkey, &plen, key);
+    // key相等,存在该记录
+    if (memcmp(pkey, buf, len) == 0)
+        return std::pair<bool, unsigned short>(true, index);
+    // key不相等，不存在该记录
+    else
+        return std::pair<bool, unsigned short>(false, index);
+}
+
+std::pair<bool, unsigned short>
+IndexBlock::insertRecord(std::vector<struct iovec> &iov)
+{
+    RelationInfo *info = table_->info_;
+    unsigned int key = info->key;
+    DataType *type = info->fields[key].type;
+
+    // 先确定插入位置
+    unsigned short index =
+        type->search(buffer_, 0, iov[0].iov_base, iov[0].iov_len);
+
+    // 比较key
+    Record record;
+    if (index < getSlots()) {
+        Slot *slots = getSlotsPointer();
+        record.attach(
+            buffer_ + be16toh(slots[index].offset),
+            be16toh(slots[index].length));
+        unsigned char *pkey;
+        unsigned int len;
+
+        record.refByIndex(&pkey, &len, 0);
+        if (memcmp(pkey, iov[0].iov_base, len) == 0) // key相等不能插入
+            return std::pair<bool, unsigned short>(false, -1);
+    }
+
+    // 如果block空间足够，插入
+    size_t blen = getFreeSize(); // 该block的富余空间
+    unsigned short actlen = (unsigned short) Record::size(iov);
+    unsigned short alignlen = ALIGN_TO_SIZE(actlen);
+    unsigned short trailerlen =
+        ALIGN_TO_SIZE((getSlots() + 1) * sizeof(Slot) + sizeof(unsigned int)) -
+        ALIGN_TO_SIZE(getSlots() * sizeof(Slot) + sizeof(unsigned int));
+    if (blen < actlen + trailerlen)
+        return std::pair<bool, unsigned short>(false, index);
+
+    // 分配空间
+    std::pair<unsigned char *, bool> alloc_ret = allocate(actlen, index);
+    // 填写记录
+    record.attach(alloc_ret.first, actlen);
+    unsigned char header = 0;
+    record.set(iov, &header);
+    // 重新排序
+    if (alloc_ret.second) reorder(type, 0);
+
+    return std::pair<bool, unsigned short>(true, index);
 }
 
 DataBlock::RecordIterator DataBlock::beginrecord()

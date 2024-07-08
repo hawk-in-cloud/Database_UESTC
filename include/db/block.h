@@ -1,10 +1,10 @@
-////
+//// hello world stash
 // @file block.h
 // @brief
 // 定义block
 // block是记录、索引的存储单元。在MySQL和HBase中，存储单元与分配单位是分开的，一般来说，
 // 最小分配单元要比block大得多。
-// block的布局如下，每个slot占用2B，这要求block最大为64KB。由于记录和索引要求按照4B对
+// block的布局如下，每个slot占用2B，这要求block最大为64KB。由于记录和索引要求按照8B对
 // 齐，BLOCK_DATA、BLOCK_TRAILER也要求8B对齐。
 //
 // +--------------------+
@@ -56,6 +56,7 @@ static const int MAGIC_NUMBER = 0x64623031; // magic number
 
 // TODO: LSN
 // 公共头部
+// 12B
 struct CommonHeader
 {
     unsigned int magic;       // magic number(4B)
@@ -79,26 +80,34 @@ struct Trailer
 };
 
 // 超块头部
+// 12B+44B=56B+8B=64B
 struct SuperHeader : CommonHeader
 {
-    unsigned int first;      // 第1个数据块(4B)
-    long long stamp;         // 时戳(8B)
-    unsigned int idle;       // 空闲块(4B)
-    unsigned int datacounts; // 数据块个数
-    unsigned int idlecounts; // 空闲块个数
-    unsigned int self;       // 本块id(4B)
-    unsigned int maxid;      // 最大的blockid(4B)
-    unsigned int pad;        // 填充位(4B)
-    long long records;       // 记录数目(8B)
+    unsigned int first;       // 第1个数据块(4B)
+    long long stamp;          // 时戳(8B)
+    unsigned int idle;        // 空闲块(4B)
+    unsigned int datacounts;  // 数据块个数(4B)
+    unsigned int idlecounts;  // 空闲块个数(4B)
+    unsigned int self;        // 本块id(4B)
+    unsigned int maxid;       // 最大的blockid(4B)
+    unsigned int indexcounts; //索引块个数(4B)
+    long long records;        // 记录数目(8B)
+    unsigned int indexroot;   // 索引根节点id(4B)
+    // hi young
+    unsigned short order;   //阶数(2B)?
+    unsigned short height;  //树的高度(2B)
+    unsigned int indexleaf; //标识第一个叶子节点的位置(4B)
 };
 
 // 空闲块头部
+// 12B+4B=16B
 struct IdleHeader : CommonHeader
 {
     unsigned int next; // 后继指针(4B)
 };
 
 // 数据块头部
+// 12B+20B=32B
 struct DataHeader : CommonHeader
 {
     unsigned int next;       // 下一个数据块(4B)
@@ -108,9 +117,21 @@ struct DataHeader : CommonHeader
     unsigned int self;       // 本块id(4B)
 };
 
-// 元数据块头部
+// 元数据块头部,32B
 using MetaHeader = DataHeader;
-
+//索引块头部
+// 32B+8B=40B
+// 12B+36B=48B
+struct IndexHeader : CommonHeader
+{
+    unsigned int next;       // 下一个数据块(4B)
+    long long stamp;         // 时戳(8B)
+    unsigned short slots;    // slots[]长度(2B)
+    unsigned short freesize; // 空闲空间大小(2B)
+    unsigned int self;       // 本块id(4B)
+    bool is_leaf;            //标记叶子节点(1B)
+    char pad[7];             //填充(7B)
+};
 ////
 // @brief
 // 公共block
@@ -323,11 +344,72 @@ class SuperBlock : public Block
         SuperHeader *header = reinterpret_cast<SuperHeader *>(buffer_);
         return be64toh(header->records);
     }
+    // 设定索引根节点
+    inline void setIndexroot(unsigned int Indexroot)
+    {
+        SuperHeader *header = reinterpret_cast<SuperHeader *>(buffer_);
+        header->indexroot = htobe32(Indexroot);
+    }
+    // 获取索引根节点
+    inline unsigned int getIndexroot()
+    {
+        SuperHeader *header = reinterpret_cast<SuperHeader *>(buffer_);
+        return be32toh(header->indexroot);
+    }
+    // 设定索引节点数量
+    inline void setIndexcounts(unsigned int Indexcounts)
+    {
+        SuperHeader *header = reinterpret_cast<SuperHeader *>(buffer_);
+        header->indexcounts = htobe32(Indexcounts);
+    }
+    // 获取索引节点数量
+    inline unsigned int getIndexcounts()
+    {
+        SuperHeader *header = reinterpret_cast<SuperHeader *>(buffer_);
+        return be32toh(header->indexcounts);
+    }
+
+    //设定阶数
+    inline void setOrder(unsigned short setorder)
+    {
+        SuperHeader *header = reinterpret_cast<SuperHeader *>(buffer_);
+        header->order = setorder;
+    }
+    //获取阶数
+    inline unsigned short getOrder()
+    {
+        SuperHeader *header = reinterpret_cast<SuperHeader *>(buffer_);
+        return header->order;
+    }
+    //设定树高
+    inline void setHeight(unsigned short setheight)
+    {
+        SuperHeader *header = reinterpret_cast<SuperHeader *>(buffer_);
+        header->height = setheight;
+    }
+    //获取树高
+    inline unsigned short getHeight()
+    {
+        SuperHeader *header = reinterpret_cast<SuperHeader *>(buffer_);
+        return header->height;
+    }
+    //设定第一个叶子节点位置
+    inline void setIndexLeaf(unsigned int setindexleaf)
+    {
+        SuperHeader *header = reinterpret_cast<SuperHeader *>(buffer_);
+        header->indexleaf = setindexleaf;
+    }
+    //获取第一个叶子节点位置
+    inline unsigned int getIndexLeaf()
+    {
+        SuperHeader *header = reinterpret_cast<SuperHeader *>(buffer_);
+        return header->indexleaf;
+    }
 };
 
 ////
 // @brief
-// 数据块
+// 元数据块
 //
 class MetaBlock : public Block
 {
@@ -457,7 +539,8 @@ class MetaBlock : public Block
         if (freespace >= upper) freespace = 0; //超过界限则设置为0
         header->freespace = htobe16(freespace);
     }
-
+    //定位第一个Record，以应付不同头部大小的Block
+    inline unsigned short getFirstRecord() { return sizeof(MetaHeader); }
     // 分配一个空间，直接返回指针，后续需要重新排列slots[]，second表示是否需要reorder
     std::pair<unsigned char *, bool>
     allocate(unsigned short space, unsigned short index);
@@ -470,7 +553,6 @@ class MetaBlock : public Block
     {
         type->sort(buffer_, key);
     }
-
     // 引用slots[]
     bool refslots(unsigned short index, Record &record)
     {
@@ -486,6 +568,7 @@ class MetaBlock : public Block
 
 ////
 // @brief
+// 数据块
 // DataBlock直接从MetaBlock派生
 //
 class Table;
@@ -535,8 +618,9 @@ class DataBlock : public MetaBlock
     // 1. 根据meta确定key的位置；
     // 2. 采用二分查找在slots[]上寻找
     // 返回值：
-    // 返回lowerbound
-    unsigned short searchRecord(void *key, size_t size);
+    //      1.找不到该记录，返回(false,lowbound)
+    //      2.找到该记录，返回（true,lowbound）
+    std::pair<bool, unsigned short> searchRecord(void *key, size_t size);
 
     // 插入记录
     // 在block中插入记录，步骤如下：
@@ -545,19 +629,28 @@ class DataBlock : public MetaBlock
     // 3. 计算劈开后前面序列的长度，然后判断新记录加入后空间是否足够，够则插入；
     // 4. 先将新的记录插入一个新的block，然后挪动原有记录到新的block；
     // 返回值：
-    // true - 表示记录完全插入
-    // false - 表示block被分裂
-    std::pair<bool, unsigned short>
-    insertRecord(std::vector<struct iovec> &iov);
+    //      first:
+    //           true - 表示记录完全插入
+    //           false - 表示block被分裂
+    //      second:
+    //           -1 - 记录存在，不能插入
+    //           index - 记录插入的位置（无论成功与否）
 
     std::pair<bool, unsigned short>
-    deleteRecord(std::vector<struct iovec> &iov);
+    insertRecord(std::vector<struct iovec> &iov);
 
     // 修改记录
     // 修改一条存在的记录
     // 先标定原记录为tomestone，然后插入新记录
-    bool updateRecord(std::vector<struct iovec> &iov);
-
+    // 返回值
+    //     first:
+    //           true - 表示记录更新成功
+    //           false - 记录不存在/更新的记录过大无法直接插入
+    //     second:
+    //           -1 - 记录不存在
+    //           index - 记录更新后插入的位置（无论成功与否）
+    std::pair<bool, unsigned short>
+    updateRecord(std::vector<struct iovec> &iov);
 
     // 分裂块位置
     // 给定新增的记录大小和位置，计算从何处开始分裂该block
@@ -575,6 +668,68 @@ class DataBlock : public MetaBlock
 
     RecordIterator beginrecord();
     RecordIterator endrecord();
+};
+class IndexBlock : public MetaBlock
+{
+  public:
+    Table *table_; // 指向table
+  public:
+    IndexBlock()
+        : table_(NULL)
+    {}
+    // 设定table
+    inline void setTable(Table *table) { table_ = table; }
+    // 获取table
+    inline Table *getTable() { return table_; }
+
+  public:
+    // 查询记录
+    // 给定一个关键字，从slots[]上搜索到该记录：
+    // 1. 根据meta确定key的位置；
+    // 2. 采用二分查找在slots[]上寻找
+    // 返回值：
+    //      1.找不到该记录，返回(false,lowbound)
+    //      2.找到该记录，返回（true,lowbound）
+
+    std::pair<bool, unsigned short> searchRecord(void *key, size_t size);
+    unsigned short requireLength(std::vector<struct iovec> &iov);
+    // 插入记录
+    // 在block中插入记录，步骤如下：
+    // 1. 先检查空间是否足够，如果够，则插入，然后重新排序；
+    // 2. 不够，根据key寻找插入位置，从这个位置将block劈开；
+    // 3. 计算劈开后前面序列的长度，然后判断新记录加入后空间是否足够，够则插入；
+    // 4. 先将新的记录插入一个新的block，然后挪动原有记录到新的block；
+    // 返回值：
+    //      first:
+    //           true - 表示记录完全插入
+    //           false - 表示block被分裂
+    //      second:
+    //           -1 - 记录存在，不能插入
+    //           index - 记录插入的位置（无论成功与否）
+    std::pair<bool, unsigned short>
+    insertRecord(std::vector<struct iovec> &iov);
+
+    //清除
+    void clear(
+        unsigned short spaceid,
+        unsigned int self,
+        unsigned short type,
+        bool is_leaf);
+    //定位第一个Record，以应付不同头部大小的Block
+    inline unsigned short getFirstRecord() { return sizeof(IndexHeader); }
+    //设置叶子节点标记
+    inline void setMark(bool mark)
+    {
+        IndexHeader *header = reinterpret_cast<IndexHeader *>(buffer_);
+        header->is_leaf = mark;
+    }
+    //获取叶子节点标记
+    inline bool getMark()
+    {
+        IndexHeader *header = reinterpret_cast<IndexHeader *>(buffer_);
+        return header->is_leaf;
+    }
+    bool IndexBlock::copyRecord(size_t key_len,Record &record);
 };
 
 inline bool operator==(

@@ -11,7 +11,6 @@
 // example on how to get the endian conversion functions on different
 // platforms.
 
-//定义大小序
 #ifndef __DB_ENDIAN_H__
 #define __DB_ENDIAN_H__
 
