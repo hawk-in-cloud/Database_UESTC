@@ -1,0 +1,8 @@
+E:/QQ/1710620472/FileRecv/db2/db/out/build/x64-Debug/CMakeFiles/edit_cache.dir
+E:/QQ/1710620472/FileRecv/db2/db/out/build/x64-Debug/CMakeFiles/rebuild_cache.dir
+E:/QQ/1710620472/FileRecv/db2/db/out/build/x64-Debug/src/CMakeFiles/dbimpl.dir
+E:/QQ/1710620472/FileRecv/db2/db/out/build/x64-Debug/src/CMakeFiles/edit_cache.dir
+E:/QQ/1710620472/FileRecv/db2/db/out/build/x64-Debug/src/CMakeFiles/rebuild_cache.dir
+E:/QQ/1710620472/FileRecv/db2/db/out/build/x64-Debug/tests/CMakeFiles/utest.dir
+E:/QQ/1710620472/FileRecv/db2/db/out/build/x64-Debug/tests/CMakeFiles/edit_cache.dir
+E:/QQ/1710620472/FileRecv/db2/db/out/build/x64-Debug/tests/CMakeFiles/rebuild_cache.dir
