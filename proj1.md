@@ -848,3 +848,124 @@ SECTION("update")
 删除操作暂时未写测试，上面三种应该够用了
 
 
+
+# 删除操作测试用例详细讲解
+
+此测试用例用于验证数据库系统中删除操作的正确性。它测试了记录的插入、删除以及删除后的状态检查，确保删除操作的行为符合预期。
+
+## 测试用例结构
+
+### 1. 打开表格并加载超级块
+
+打开表格并读取超级块以进行初始化。
+
+```
+Table table;
+table.open("table");
+
+printf("delete\n=========\n");
+// 加载超级块
+BufDesp *bd = kBuffer.borrow("table", 0);
+SuperBlock super;
+super.attach(bd->buffer);
+int id = super.getFirst();
+```
+2. 加载第一个数据块
+加载第一个数据块，为后续操作做准备。
+
+```
+// 加载第一个数据块
+DataBlock data;
+data.setTable(&table);
+BufDesp *bd2 = kBuffer.borrow("table", id);
+data.attach(bd2->buffer);
+bd2->relref();
+```
+
+3. 初始化记录数据并插入记录
+准备插入的数据并插入两条记录。
+
+```
+// 初始化记录数据
+DataType *type = findDataType("BIGINT");
+std::vector<struct iovec> iov(3);
+long long nid = 1;
+char phone[20];
+phone[1] = '1'; // 初始值
+char addr[128];
+type->htobe(&nid);
+iov[0].iov_base = &nid;
+iov[0].iov_len = 8;
+iov[1].iov_base = phone;
+iov[1].iov_len = 20;
+iov[2].iov_base = (void *)addr;
+iov[2].iov_len = 128;
+data.insertRecord(iov);
+
+// 插入另一条记录，以便删除后进行验证
+nid = 2;
+phone[1] = '2';
+type->htobe(&nid);
+iov[0].iov_base = &nid;
+data.insertRecord(iov);
+```
+4. 检查插入的记录
+确认插入的记录是否正确。
+
+```
+// 检查插入的记录
+Record record;
+data.refslots(2, record);
+unsigned char *pkey;
+unsigned int plen;
+record.refByIndex(&pkey, &plen, 1);
+REQUIRE(pkey[1] == '1'); // 确认初始值
+data.refslots(3, record);
+record.refByIndex(&pkey, &plen, 1);
+REQUIRE(pkey[1] == '2'); // 确认第二条记录的初始值
+```
+5. 删除记录并检查删除操作
+删除一条记录并检查删除操作的正确性。
+
+```
+// 删除记录
+unsigned short osize = data.getFreespaceSize(); // 删除前的空闲空间
+std::pair<bool, unsigned short> deleteResult = data.deleteRecord(&nid, sizeof(nid));
+unsigned short nsize = data.getFreespaceSize(); // 删除后的空闲空间
+
+REQUIRE(deleteResult.first);
+REQUIRE(deleteResult.second == 3); // 确保返回的索引正确
+REQUIRE(data.getSlots() == 4); // 确保槽的数量正确
+
+// 验证删除操作是否正确
+REQUIRE(nsize > osize); // 确保删除后空闲空间增加
+```
+6. 检查剩余记录的正确性
+确认剩余记录是否正确，并确保已删除的记录无法访问。
+
+```
+// 检查剩余记录的正确性
+data.refslots(2, record);
+record.refByIndex(&pkey, &plen, 1);
+REQUIRE(pkey[1] == '1'); // 确认第一条记录没有受到影响
+
+// 尝试访问已删除的记录
+bool exceptionCaught = false;
+try {
+    data.refslots(3, record);
+} catch (const std::exception & e) {
+    exceptionCaught = true;
+}
+REQUIRE(exceptionCaught); // 确保已删除的记录无法访问
+```
+
+delete 测试用例的步骤
+1. 打开表格并加载超级块：确保表格正确打开，并读取超级块获取索引信息。
+2. 加载第一个数据块：加载第一个数据块，为后续操作做准备。
+3. 初始化记录数据并插入记录：准备并插入两条记录。
+4. 检查插入的记录：验证记录是否正确插入。
+5. 删除记录并检查删除操作：删除记录并验证删除操作的正确性，包括返回索引、槽的数量和空闲空间。
+6. 检查剩余记录的正确性：确认剩余记录没有受到影响，并确保已删除的记录无法访问。
+通过上述步骤，delete 测试用例能够全面验证删除操作的正确性和稳定性。
+
+
